@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+*.egg-info/
+
+# Streamlit
+.streamlit/
+
+# Data cache
+data/*.csv
+data/*.pkl
+*.pkl
+*.pickle
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Large model files
+models/*.pkl
+models/*.joblib
