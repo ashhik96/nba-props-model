@@ -144,13 +144,11 @@ def get_todays_games():
 @st.cache_data(ttl=900)
 def get_upcoming_games(days: int = 7):
     """
-    Get upcoming NBA games for the next `days` using stats ScoreboardV2.
-    Falls back to today's games via live ScoreBoard when necessary.
+    Get upcoming NBA games for the next `days` using NBA schedule JSON.
     Returns list of dicts: home, away, date, date_display, time_display, status
     """
     print(f"\n=== Fetching upcoming games from NBA schedule JSON ===")
     try:
-        # Fetch NBA's static schedule JSON
         schedule_url = "https://cdn.nba.com/static/json/staticData/scheduleLeagueV2_1.json"
         response = requests.get(schedule_url, timeout=10)
         
@@ -166,29 +164,24 @@ def get_upcoming_games(days: int = 7):
             print("  No game dates found in schedule")
             return get_todays_games()
         
-        # Get current date and end date
         today = datetime.now()
         end_date = today + timedelta(days=days)
         
         upcoming = []
         
         for game_date_obj in game_dates:
-            # Parse game date
             game_date_str = game_date_obj.get('gameDate', '')
             if not game_date_str:
                 continue
             
             try:
-                # Format: "10/02/2025 00:00:00"
                 game_date = datetime.strptime(game_date_str, '%m/%d/%Y %H:%M:%S')
             except:
                 continue
             
-            # Check if within our date range
             if game_date.date() < today.date() or game_date.date() > end_date.date():
                 continue
             
-            # Process games for this date
             games = game_date_obj.get('games', [])
             for game in games:
                 away_team = game.get('awayTeam', {})
@@ -200,12 +193,10 @@ def get_upcoming_games(days: int = 7):
                 if not away_abbrev or not home_abbrev:
                     continue
                 
-                # Get game time if available
                 game_time_str = game.get('awayTeamTime', '') or game.get('homeTeamTime', '')
                 time_display = ''
                 if game_time_str:
                     try:
-                        # Parse time like "2025-10-03T19:00:00Z"
                         game_dt = datetime.fromisoformat(game_time_str.replace('Z', '+00:00'))
                         time_display = game_dt.strftime('%I:%M %p')
                     except:
@@ -268,13 +259,8 @@ def get_player_position(player_id, season='2024-25'):
         gamelog = playergamelog.PlayerGameLog(player_id=player_id, season=season, season_type_all_star='Regular Season')
         df = gamelog.get_data_frames()[0]
         
-        # NBA API doesn't directly provide position in game logs
-        # We'll infer from player stats or use a default
-        # For now, return a generic position based on player name lookup
         player_info = players.find_player_by_id(player_id)
         if player_info:
-            # Default to F for forwards, G for guards, C for centers
-            # This is a simplified approach
             return 'F'  # Default to Forward
         return 'F'
     except Exception as e:
@@ -283,10 +269,7 @@ def get_player_position(player_id, season='2024-25'):
 
 @st.cache_data(ttl=1800)
 def get_team_next_game(team_abbrev):
-    """
-    Get a team's next upcoming game by checking scoreboard
-    Returns dict with opponent info or None
-    """
+    """Get a team's next upcoming game"""
     try:
         time.sleep(0.5)
         
@@ -325,7 +308,8 @@ def get_team_next_game(team_abbrev):
 def scrape_defense_vs_position():
     """
     Scrape defensive rankings vs position from HashtagBasketball
-    Returns DataFrame with columns: Position, Team, Rank, PTS
+    Returns DataFrame with ALL defensive stats per position
+    Columns: Position, Team, Rank, PTS, FG_PCT, FT_PCT, TPM, REB, AST, STL, BLK, TO
     """
     try:
         url = "https://hashtagbasketball.com/nba-defense-vs-position"
@@ -351,20 +335,72 @@ def scrape_defense_vs_position():
         # Get table 3 (the main data table)
         raw_df = tables[3].copy()
         
-        # The table has Position in column 0, "TEAM RANK" combined in column 1
         df_clean = pd.DataFrame()
+        
+        # Column 0: Position
         df_clean['Position'] = raw_df.iloc[:, 0]
         
-        # Split "TEAM RANK" (e.g., "BOS 1" -> Team="BOS", Rank=1)
+        # Column 1: "TEAM RANK" - split to get team
         team_rank = raw_df.iloc[:, 1].astype(str).str.split(expand=True)
         df_clean['Team'] = team_rank[0]
-        df_clean['Rank'] = team_rank[1].astype(int)
         
-        # Get PTS for reference
-        pts_column = raw_df.iloc[:, 2].astype(str).str.split(expand=True)
-        df_clean['PTS'] = pts_column[0].astype(float)
+        # Extract all defensive stats (each has "value rank" format)
+        # Column 2: PTS
+        pts_split = raw_df.iloc[:, 2].astype(str).str.split(expand=True)
+        df_clean['PTS'] = pts_split[0].astype(float)
         
-        print(f"Successfully scraped defense vs position for {len(df_clean)} team-position combinations")
+        # Column 3: FG%
+        fg_pct_split = raw_df.iloc[:, 3].astype(str).str.split(expand=True)
+        df_clean['FG_PCT'] = fg_pct_split[0].astype(float)
+        
+        # Column 4: FT%
+        ft_pct_split = raw_df.iloc[:, 4].astype(str).str.split(expand=True)
+        df_clean['FT_PCT'] = ft_pct_split[0].astype(float)
+        
+        # Column 5: 3PM
+        tpm_split = raw_df.iloc[:, 5].astype(str).str.split(expand=True)
+        df_clean['TPM'] = tpm_split[0].astype(float)
+        
+        # Column 6: REB
+        reb_split = raw_df.iloc[:, 6].astype(str).str.split(expand=True)
+        df_clean['REB'] = reb_split[0].astype(float)
+        
+        # Column 7: AST
+        ast_split = raw_df.iloc[:, 7].astype(str).str.split(expand=True)
+        df_clean['AST'] = ast_split[0].astype(float)
+        
+        # Column 8: STL
+        stl_split = raw_df.iloc[:, 8].astype(str).str.split(expand=True)
+        df_clean['STL'] = stl_split[0].astype(float)
+        
+        # Column 9: BLK
+        blk_split = raw_df.iloc[:, 9].astype(str).str.split(expand=True)
+        df_clean['BLK'] = blk_split[0].astype(float)
+        
+        # Column 10: TO
+        to_split = raw_df.iloc[:, 10].astype(str).str.split(expand=True)
+        df_clean['TO'] = to_split[0].astype(float)
+        
+        # Create composite defensive score for ranking
+        # Lower is better for: PTS, FG_PCT, FT_PCT, TPM, REB, AST
+        # Higher is better for: STL, BLK, TO (forced)
+        
+        for pos in df_clean['Position'].unique():
+            pos_data = df_clean[df_clean['Position'] == pos]
+            
+            # Weighted composite score
+            composite_scores = (
+                pos_data['PTS'] * 1.0 +      # Primary: points allowed
+                pos_data['FG_PCT'] * 0.3 +   # Shooting efficiency allowed
+                pos_data['TPM'] * 0.2 -      # Three-pointers allowed (subtract)
+                pos_data['STL'] * 0.2 -      # Steals (good defense, subtract)
+                pos_data['BLK'] * 0.15       # Blocks (good defense, subtract)
+            )
+            
+            # Rank within position (lower composite = better defense = rank 1)
+            df_clean.loc[df_clean['Position'] == pos, 'Rank'] = composite_scores.rank(method='min').astype(int)
+        
+        print(f"Successfully scraped {len(df_clean)} team-position combos with full defensive stats")
         
         return df_clean
         
@@ -396,44 +432,6 @@ def get_players_by_team(team_abbrev, season='2024-25'):
         df = roster.get_data_frames()[0]
         
         if not df.empty:
-            # Return player names and IDs
-            players_list = []
-            for _, row in df.iterrows():
-                players_list.append({
-                    'player_id': row['PLAYER_ID'],
-                    'full_name': row['PLAYER'],
-                    'position': row.get('POSITION', 'F')
-                })
-            return pd.DataFrame(players_list)
-        
-        return pd.DataFrame()
-    except Exception as e:
-        print(f"Error fetching team roster: {e}")
-        return pd.DataFrame()
-
-
-@st.cache_data(ttl=3600)
-def get_players_by_team(team_abbrev, season='2024-25'):
-    """
-    Get all players who have played for a specific team in a season
-    Returns DataFrame with player names and IDs
-    """
-    try:
-        all_teams = teams.get_teams()
-        team_info = [t for t in all_teams if t['abbreviation'] == team_abbrev]
-        
-        if not team_info:
-            return pd.DataFrame()
-        
-        team_id = team_info[0]['id']
-        
-        rate_limit()
-        from nba_api.stats.endpoints import commonteamroster
-        roster = commonteamroster.CommonTeamRoster(team_id=team_id, season=season)
-        df = roster.get_data_frames()[0]
-        
-        if not df.empty:
-            # Return player names and IDs
             players_list = []
             for _, row in df.iterrows():
                 players_list.append({
@@ -451,7 +449,7 @@ def get_players_by_team(team_abbrev, season='2024-25'):
 
 def get_team_defense_rank_vs_position(team_abbrev, player_position, def_vs_pos_df):
     """
-    Get a team's defensive rank against a specific position
+    Get a team's defensive rank and ALL defensive stats against a specific position
     
     Args:
         team_abbrev: Team abbreviation (e.g., 'ORL')
@@ -459,10 +457,14 @@ def get_team_defense_rank_vs_position(team_abbrev, player_position, def_vs_pos_d
         def_vs_pos_df: DataFrame from scrape_defense_vs_position()
     
     Returns:
-        dict with rank, total_teams, percentile, and rating
+        dict with rank, all defensive stats, percentile, and rating
     """
     if def_vs_pos_df.empty:
-        return {'rank': 15, 'total': 30, 'percentile': 50, 'rating': 'Average'}
+        return {
+            'rank': 15, 'total': 30, 'percentile': 50, 'rating': 'Average',
+            'pts_allowed': 110.0, 'fg_pct': 45.0, 'tpm_allowed': 3.0,
+            'stl': 1.5, 'blk': 1.0
+        }
     
     # Map player positions to website's position categories
     position_mapping = {
@@ -473,8 +475,8 @@ def get_team_defense_rank_vs_position(team_abbrev, player_position, def_vs_pos_d
     
     positions_to_check = position_mapping.get(player_position, ['SF'])
     
-    # Get ranks for all relevant positions
-    ranks = []
+    # Get data for all relevant positions
+    all_data = []
     for pos in positions_to_check:
         team_data = def_vs_pos_df[
             (def_vs_pos_df['Team'] == team_abbrev) & 
@@ -482,13 +484,26 @@ def get_team_defense_rank_vs_position(team_abbrev, player_position, def_vs_pos_d
         ]
         
         if not team_data.empty:
-            ranks.append(team_data.iloc[0]['Rank'])
+            all_data.append(team_data.iloc[0])
     
-    if not ranks:
-        return {'rank': 15, 'total': 30, 'percentile': 50, 'rating': 'Average'}
+    if not all_data:
+        return {
+            'rank': 15, 'total': 30, 'percentile': 50, 'rating': 'Average',
+            'pts_allowed': 110.0, 'fg_pct': 45.0, 'tpm_allowed': 3.0,
+            'stl': 1.5, 'blk': 1.0
+        }
     
-    # Average the ranks if multiple positions
-    avg_rank = sum(ranks) / len(ranks)
+    # Average stats across positions if multiple
+    avg_rank = sum(d['Rank'] for d in all_data) / len(all_data)
+    avg_pts = sum(d['PTS'] for d in all_data) / len(all_data)
+    avg_fg_pct = sum(d['FG_PCT'] for d in all_data) / len(all_data)
+    avg_ft_pct = sum(d['FT_PCT'] for d in all_data) / len(all_data)
+    avg_tpm = sum(d['TPM'] for d in all_data) / len(all_data)
+    avg_reb = sum(d['REB'] for d in all_data) / len(all_data)
+    avg_ast = sum(d['AST'] for d in all_data) / len(all_data)
+    avg_stl = sum(d['STL'] for d in all_data) / len(all_data)
+    avg_blk = sum(d['BLK'] for d in all_data) / len(all_data)
+    avg_to = sum(d['TO'] for d in all_data) / len(all_data)
     
     # Calculate percentile (lower rank = better defense)
     percentile = ((30 - avg_rank) / 30) * 100
@@ -508,5 +523,15 @@ def get_team_defense_rank_vs_position(team_abbrev, player_position, def_vs_pos_d
         'total': 30,
         'percentile': round(percentile, 1),
         'rating': rating,
-        'positions_checked': positions_to_check
+        'positions_checked': positions_to_check,
+        # All defensive stats
+        'pts_allowed': round(avg_pts, 1),
+        'fg_pct': round(avg_fg_pct, 1),
+        'ft_pct': round(avg_ft_pct, 1),
+        'tpm_allowed': round(avg_tpm, 1),
+        'reb_allowed': round(avg_reb, 1),
+        'ast_allowed': round(avg_ast, 1),
+        'stl': round(avg_stl, 1),
+        'blk': round(avg_blk, 1),
+        'to_forced': round(avg_to, 1)
     }
