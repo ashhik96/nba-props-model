@@ -34,3 +34,6 @@ Thumbs.db
 # Large model files
 models/*.pkl
 models/*.joblib
+
+# tar files
+*.tar.gz
