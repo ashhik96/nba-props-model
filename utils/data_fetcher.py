@@ -260,6 +260,80 @@ def scrape_defense_vs_position():
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=3600)
+def get_players_by_team(team_abbrev, season='2024-25'):
+    """
+    Get all players who have played for a specific team in a season
+    Returns DataFrame with player names and IDs
+    """
+    try:
+        all_teams = teams.get_teams()
+        team_info = [t for t in all_teams if t['abbreviation'] == team_abbrev]
+        
+        if not team_info:
+            return pd.DataFrame()
+        
+        team_id = team_info[0]['id']
+        
+        rate_limit()
+        from nba_api.stats.endpoints import commonteamroster
+        roster = commonteamroster.CommonTeamRoster(team_id=team_id, season=season)
+        df = roster.get_data_frames()[0]
+        
+        if not df.empty:
+            # Return player names and IDs
+            players_list = []
+            for _, row in df.iterrows():
+                players_list.append({
+                    'player_id': row['PLAYER_ID'],
+                    'full_name': row['PLAYER'],
+                    'position': row.get('POSITION', 'F')
+                })
+            return pd.DataFrame(players_list)
+        
+        return pd.DataFrame()
+    except Exception as e:
+        print(f"Error fetching team roster: {e}")
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=3600)
+def get_players_by_team(team_abbrev, season='2024-25'):
+    """
+    Get all players who have played for a specific team in a season
+    Returns DataFrame with player names and IDs
+    """
+    try:
+        all_teams = teams.get_teams()
+        team_info = [t for t in all_teams if t['abbreviation'] == team_abbrev]
+        
+        if not team_info:
+            return pd.DataFrame()
+        
+        team_id = team_info[0]['id']
+        
+        rate_limit()
+        from nba_api.stats.endpoints import commonteamroster
+        roster = commonteamroster.CommonTeamRoster(team_id=team_id, season=season)
+        df = roster.get_data_frames()[0]
+        
+        if not df.empty:
+            # Return player names and IDs
+            players_list = []
+            for _, row in df.iterrows():
+                players_list.append({
+                    'player_id': row['PLAYER_ID'],
+                    'full_name': row['PLAYER'],
+                    'position': row.get('POSITION', 'F')
+                })
+            return pd.DataFrame(players_list)
+        
+        return pd.DataFrame()
+    except Exception as e:
+        print(f"Error fetching team roster: {e}")
+        return pd.DataFrame()
+
+
 def get_team_defense_rank_vs_position(team_abbrev, player_position, def_vs_pos_df):
     """
     Get a team's defensive rank against a specific position

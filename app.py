@@ -21,7 +21,8 @@ from utils.data_fetcher import (
     get_head_to_head_history,
     get_player_position,
     scrape_defense_vs_position,
-    get_team_defense_rank_vs_position
+    get_team_defense_rank_vs_position,
+    get_players_by_team
 )
 from utils.features import (
     calculate_season_averages,
@@ -70,29 +71,124 @@ model = load_model()
 current_season = "2025-26"  # Current season (just started)
 prior_season = "2024-25"    # Last full season
 
-# Load players
-@st.cache_data(ttl=3600)
-def load_players():
-    players_df = get_all_active_players()
-    active_players_df = players_df[players_df['is_active'] == True]
-    return active_players_df
+# Get today's games first
+todays_games = get_todays_games()
 
-try:
-    players_df = load_players()
-    player_names = sorted(players_df['full_name'].tolist())
-except Exception as e:
-    st.error(f"Error loading players: {e}")
-    player_names = []
+# STEP 1: Game Selection
+st.sidebar.subheader("🏀 Select Upcoming Game")
 
-# Player selection
-st.sidebar.subheader("🎯 Select Player")
-selected_player = st.sidebar.selectbox(
-    "Choose a player",
-    options=player_names,
-    index=0 if player_names else None
-)
+selected_game = None
+selected_team = None
+opponent_abbrev = None
+
+if todays_games:
+    game_options = ["-- Select a Game --"]
+    game_map = {}
+    
+    for idx, game in enumerate(todays_games):
+        game_str = f"{game['away']} @ {game['home']}"
+        game_options.append(game_str)
+        game_map[game_str] = game
+    
+    selected_game_str = st.sidebar.selectbox(
+        "Choose from today's games",
+        options=game_options,
+        help="Select a game to analyze"
+    )
+    
+    if selected_game_str != "-- Select a Game --":
+        selected_game = game_map[selected_game_str]
+        
+        # STEP 2: Team Selection (from the selected game)
+        st.sidebar.subheader("🏟️ Select Team to Analyze")
+        
+        team_options = [selected_game['home'], selected_game['away']]
+        selected_team = st.sidebar.radio(
+            "Which team's player to analyze?",
+            options=team_options,
+            format_func=lambda x: f"🏠 {x}" if x == selected_game['home'] else f"✈️ {x}"
+        )
+        
+        # Set opponent based on selected team
+        if selected_team == selected_game['home']:
+            opponent_abbrev = selected_game['away']
+        else:
+            opponent_abbrev = selected_game['home']
+        
+        st.sidebar.info(f"**Matchup:** {selected_team} vs {opponent_abbrev}")
+else:
+    st.sidebar.warning("⚠️ No games scheduled for today")
+    st.sidebar.info("You can manually select teams below")
+    
+    # Manual team selection if no games
+    st.sidebar.subheader("🏟️ Manual Team Selection")
+    all_teams = get_all_nba_teams()
+    
+    selected_team = st.sidebar.selectbox(
+        "Select team to analyze",
+        options=["-- Select Team --"] + all_teams
+    )
+    
+    if selected_team and selected_team != "-- Select Team --":
+        available_opponents = [team for team in all_teams if team != selected_team]
+        opponent_abbrev = st.sidebar.selectbox(
+            "Select opponent",
+            options=["-- Select Opponent --"] + available_opponents
+        )
+        if opponent_abbrev == "-- Select Opponent --":
+            opponent_abbrev = None
+
+# STEP 3: Player Selection (from the selected team)
+selected_player = None
+player_team = None
+player_position = 'F'
+
+if selected_team and selected_team != "-- Select Team --":
+    st.sidebar.subheader("🎯 Select Player")
+    player_team = selected_team
+    
+    with st.spinner(f"Loading players from {selected_team}..."):
+        # Get players from the selected team
+        team_players_df = get_players_by_team(selected_team, season=current_season)
+        
+        # If current season roster is empty, try prior season
+        if team_players_df.empty:
+            team_players_df = get_players_by_team(selected_team, season=prior_season)
+        
+        if not team_players_df.empty:
+            player_names = sorted(team_players_df['full_name'].tolist())
+            
+            # Select first player as default
+            selected_player = st.sidebar.selectbox(
+                f"Choose player from {selected_team}",
+                options=player_names,
+                index=0,
+                help="Players from the selected team"
+            )
+            
+            # Get player info
+            if selected_player:
+                player_id = get_player_id(selected_player)
+                if player_id:
+                    player_position = get_player_position(player_id, season=prior_season)
+                    st.sidebar.success(f"✅ {selected_player} ({player_position})")
+        else:
+            st.sidebar.error(f"Could not load roster for {selected_team}")
+            # Fallback to all players
+            try:
+                all_players_df = get_all_active_players()
+                active_players_df = all_players_df[all_players_df['is_active'] == True]
+                player_names = sorted(active_players_df['full_name'].tolist())
+                selected_player = st.sidebar.selectbox(
+                    "Choose any player",
+                    options=player_names,
+                    index=0
+                )
+            except Exception as e:
+                st.sidebar.error(f"Error loading players: {e}")
 
 # Stat selection
+st.sidebar.subheader("📊 Stat to Predict")
 stat_options = {
     "Points": "PTS",
     "Assists": "AST",
@@ -107,72 +203,6 @@ selected_stat_display = st.sidebar.selectbox(
     options=list(stat_options.keys())
 )
 selected_stat = stat_options[selected_stat_display]
-
-# Opponent selection
-st.sidebar.subheader("🏟️ Matchup Info")
-
-player_team = None
-opponent_abbrev = None
-player_position = 'F'
-
-if selected_player:
-    player_id = get_player_id(selected_player)
-    if player_id:
-        with st.spinner("Detecting player's team..."):
-            player_team = get_player_current_team(player_id, season=current_season)
-            if not player_team:
-                player_team = get_player_current_team(player_id, season=prior_season)
-            
-            player_position = get_player_position(player_id, season=prior_season)
-        
-        if player_team:
-            st.sidebar.info(f"**{selected_player}** plays for **{player_team}** ({player_position})")
-
-# Get today's games
-todays_games = get_todays_games()
-
-# Filter games for player's team
-relevant_games = []
-if player_team and todays_games:
-    for game in todays_games:
-        if player_team in [game['home'], game['away']]:
-            relevant_games.append(game)
-
-# Show relevant games
-if relevant_games:
-    st.sidebar.success(f"🎯 **Next Game Found!**")
-    for game in relevant_games:
-        if player_team == game['home']:
-            opponent_abbrev = game['away']
-            st.sidebar.markdown(f"**{player_team}** vs **{opponent_abbrev}** (Home)")
-        else:
-            opponent_abbrev = game['home']
-            st.sidebar.markdown(f"**{player_team}** @ **{opponent_abbrev}** (Away)")
-    
-    change_opponent = st.sidebar.checkbox("Choose different opponent")
-    if change_opponent:
-        opponent_abbrev = None
-else:
-    st.sidebar.info("📅 Select opponent below for next matchup")
-
-# Manual opponent selection
-if opponent_abbrev is None:
-    st.sidebar.markdown("**Select Opponent:**")
-    all_teams = get_all_nba_teams()
-    
-    if player_team:
-        available_opponents = [team for team in all_teams if team != player_team]
-    else:
-        available_opponents = all_teams
-    
-    manual_opponent = st.sidebar.selectbox(
-        "Choose opponent team",
-        options=["-- Select Opponent --"] + available_opponents,
-        help="Select the opposing team"
-    )
-    
-    if manual_opponent != "-- Select Opponent --":
-        opponent_abbrev = manual_opponent
 
 # Main content
 if selected_player:
@@ -476,7 +506,17 @@ if selected_player:
     else:
         st.error(f"Could not find player ID for {selected_player}")
 else:
-    st.info("👈 Select a player from the sidebar to begin")
+    st.info("👈 Select a game and team from the sidebar to begin")
+    
+    # Show helpful instructions
+    st.markdown("""
+    ### How to Use:
+    1. **Select a Game** - Choose from today's scheduled games (if available)
+    2. **Select a Team** - Pick which team to analyze from the matchup
+    3. **Select a Player** - Choose a player from the selected team (default player auto-selected)
+    4. **Choose a Stat** - Select the stat you want to predict
+    5. **View Projections** - Get AI-powered predictions and analysis
+    """)
 
 # Footer
 st.markdown("---")
