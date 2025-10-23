@@ -19,7 +19,9 @@ from utils.data_fetcher import (
     get_player_current_team,
     get_opponent_recent_games,
     get_head_to_head_history,
-    get_player_position
+    get_player_position,
+    scrape_defense_vs_position,
+    get_team_defense_rank_vs_position
 )
 from utils.features import (
     calculate_season_averages,
@@ -200,7 +202,8 @@ if selected_player:
                     opponent_abbrev,
                     seasons=[prior_season, '2023-24']
                 )
-            
+                # Fetch defense vs position rankings
+                def_vs_pos_df = scrape_defense_vs_position()
             # Check data availability
             has_current_data = not current_logs.empty
             has_prior_data = not prior_logs.empty
@@ -224,6 +227,66 @@ if selected_player:
                 if current_games < 5:
                     st.info(f"ℹ️ Only {current_games} games in {current_season}. Using {prior_season} data heavily + head-to-head history.")
                 
+                # Show opponent defense vs position
+                opp_def_rank = get_team_defense_rank_vs_position(
+                    opponent_abbrev,
+                    player_position,
+                    def_vs_pos_df
+                )
+
+                st.markdown("---")
+                # Create a readable position description
+                position_desc = {
+                    'G': 'Guards (PG/SG)',
+                    'F': 'Forwards (SF/PF)',
+                    'C': 'Centers (C)'
+                }.get(player_position, f'{player_position} Position')
+
+                st.subheader(f"🛡️ {opponent_abbrev} Defense vs {position_desc}")
+
+                col_def1, col_def2, col_def3 = st.columns(3)
+
+                with col_def1:
+                    rank = opp_def_rank['rank']
+                    # Color code based on rank
+                    if rank <= 10:
+                        rank_color = "red"  # Tough defense
+                        emoji = "🔴"
+                    elif rank <= 20:
+                        rank_color = "orange"  # Average
+                        emoji = "🟡"
+                    else:
+                        rank_color = "green"  # Weak defense
+                        emoji = "🟢"
+                    
+                    st.metric(
+                        "Defensive Rank vs Position",
+                        f"{emoji} #{rank} of 30",
+                        help=f"How {opponent_abbrev} ranks defending {player_position} position"
+                    )
+
+                with col_def2:
+                    rating = opp_def_rank['rating']
+                    st.metric(
+                        "Matchup Difficulty",
+                        rating,
+                        help="Elite = Top 10, Above Avg = 11-15, Avg = 16-20, Below Avg = 21+"
+                    )
+
+                with col_def3:
+                    percentile = opp_def_rank['percentile']
+                    st.metric(
+                        "Defense Percentile",
+                        f"{percentile:.0f}%",
+                        help="Higher = Better defense"
+                    )
+
+                # Add explanation for color coding
+                if rank <= 10:
+                    st.info(f"🔴 **Tough Matchup:** {opponent_abbrev} is a top-10 defense vs {player_position}. Consider UNDER or avoid.")
+                elif rank >= 21:
+                    st.success(f"🟢 **Favorable Matchup:** {opponent_abbrev} ranks bottom-10 vs {player_position}. Consider OVER!")
+
                 # Build enhanced features
                 features = build_enhanced_feature_vector(
                     current_logs,
