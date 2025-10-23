@@ -6,7 +6,7 @@ import time
 import requests
 
 from nba_api.stats.static import players, teams
-from nba_api.stats.endpoints import playergamelog, leaguedashteamstats, teamgamelog
+from nba_api.stats.endpoints import playergamelog, leaguedashteamstats, teamgamelog, scoreboardv2, leaguegamefinder
 from nba_api.live.nba.endpoints import scoreboard
 
 # Rate limiting
@@ -104,22 +104,137 @@ def fetch_fanduel_lines(api_key=None):
 
 @st.cache_data(ttl=1800)
 def get_todays_games():
-    """Get today's NBA games"""
+    """Get today's NBA games with date and time info (live API)."""
     try:
         board = scoreboard.ScoreBoard()
         games_data = board.get_dict()
         
         games = []
+        today = datetime.now()
+        
         if 'scoreboard' in games_data and 'games' in games_data['scoreboard']:
             for game in games_data['scoreboard']['games']:
+                game_status = game.get('gameStatus', 1)
+                
+                game_date_display = today.strftime('%a, %b %d')
+                game_time_utc = game.get('gameTimeUTC', '')
+                if game_time_utc:
+                    try:
+                        game_dt = datetime.fromisoformat(game_time_utc.replace('Z', '+00:00'))
+                        game_time_display = game_dt.strftime('%I:%M %p')
+                    except:
+                        game_time_display = ''
+                else:
+                    game_time_display = ''
+                
                 games.append({
                     'home': game.get('homeTeam', {}).get('teamTricode', ''),
-                    'away': game.get('awayTeam', {}).get('teamTricode', '')
+                    'away': game.get('awayTeam', {}).get('teamTricode', ''),
+                    'date': today.strftime('%Y-%m-%d'),
+                    'date_display': game_date_display,
+                    'time_display': game_time_display,
+                    'status': game_status
                 })
+        
         return games
     except Exception as e:
         print(f"Error fetching today's games: {e}")
         return []
+
+@st.cache_data(ttl=900)
+def get_upcoming_games(days: int = 7):
+    """
+    Get upcoming NBA games for the next `days` using stats ScoreboardV2.
+    Falls back to today's games via live ScoreBoard when necessary.
+    Returns list of dicts: home, away, date, date_display, time_display, status
+    """
+    print(f"\n=== Fetching upcoming games from NBA schedule JSON ===")
+    try:
+        # Fetch NBA's static schedule JSON
+        schedule_url = "https://cdn.nba.com/static/json/staticData/scheduleLeagueV2_1.json"
+        response = requests.get(schedule_url, timeout=10)
+        
+        if response.status_code != 200:
+            print(f"  Failed to fetch schedule: HTTP {response.status_code}")
+            return get_todays_games()
+        
+        schedule_data = response.json()
+        league_schedule = schedule_data.get('leagueSchedule', {})
+        game_dates = league_schedule.get('gameDates', [])
+        
+        if not game_dates:
+            print("  No game dates found in schedule")
+            return get_todays_games()
+        
+        # Get current date and end date
+        today = datetime.now()
+        end_date = today + timedelta(days=days)
+        
+        upcoming = []
+        
+        for game_date_obj in game_dates:
+            # Parse game date
+            game_date_str = game_date_obj.get('gameDate', '')
+            if not game_date_str:
+                continue
+            
+            try:
+                # Format: "10/02/2025 00:00:00"
+                game_date = datetime.strptime(game_date_str, '%m/%d/%Y %H:%M:%S')
+            except:
+                continue
+            
+            # Check if within our date range
+            if game_date.date() < today.date() or game_date.date() > end_date.date():
+                continue
+            
+            # Process games for this date
+            games = game_date_obj.get('games', [])
+            for game in games:
+                away_team = game.get('awayTeam', {})
+                home_team = game.get('homeTeam', {})
+                
+                away_abbrev = away_team.get('teamTricode', '')
+                home_abbrev = home_team.get('teamTricode', '')
+                
+                if not away_abbrev or not home_abbrev:
+                    continue
+                
+                # Get game time if available
+                game_time_str = game.get('awayTeamTime', '') or game.get('homeTeamTime', '')
+                time_display = ''
+                if game_time_str:
+                    try:
+                        # Parse time like "2025-10-03T19:00:00Z"
+                        game_dt = datetime.fromisoformat(game_time_str.replace('Z', '+00:00'))
+                        time_display = game_dt.strftime('%I:%M %p')
+                    except:
+                        pass
+                
+                game_date_display = game_date.strftime('%a, %b %d')
+                
+                upcoming.append({
+                    'home': home_abbrev,
+                    'away': away_abbrev,
+                    'date': game_date.strftime('%Y-%m-%d'),
+                    'date_display': game_date_display,
+                    'time_display': time_display,
+                    'status': 'Scheduled'
+                })
+        
+        print(f"  Found {len(upcoming)} upcoming games")
+        
+        if not upcoming:
+            print("  No upcoming games found, falling back to live scoreboard")
+            return get_todays_games()
+        
+        return upcoming
+        
+    except Exception as e:
+        print(f"Error fetching upcoming games: {e}")
+        import traceback
+        traceback.print_exc()
+        return get_todays_games()
 
 def get_all_nba_teams():
     """Get list of all NBA team abbreviations"""

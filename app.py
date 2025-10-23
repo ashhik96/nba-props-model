@@ -22,7 +22,8 @@ from utils.data_fetcher import (
     get_player_position,
     scrape_defense_vs_position,
     get_team_defense_rank_vs_position,
-    get_players_by_team
+    get_players_by_team,
+    get_upcoming_games
 )
 from utils.features import (
     calculate_season_averages,
@@ -71,8 +72,8 @@ model = load_model()
 current_season = "2025-26"  # Current season (just started)
 prior_season = "2024-25"    # Last full season
 
-# Get today's games first
-todays_games = get_todays_games()
+# Get upcoming games (next 7 days)
+upcoming_games = get_upcoming_games(days=7)
 
 # STEP 1: Game Selection
 st.sidebar.subheader("🏀 Select Upcoming Game")
@@ -81,17 +82,19 @@ selected_game = None
 selected_team = None
 opponent_abbrev = None
 
-if todays_games:
+if upcoming_games:
     game_options = ["-- Select a Game --"]
     game_map = {}
     
-    for idx, game in enumerate(todays_games):
-        game_str = f"{game['away']} @ {game['home']}"
+    for idx, game in enumerate(upcoming_games):
+        # Format: "Wed, Oct 23 - LAL @ BOS (7:30 PM)"
+        time_str = f" ({game['time_display']})" if game.get('time_display') else ""
+        game_str = f"{game['date_display']} - {game['away']} @ {game['home']}{time_str}"
         game_options.append(game_str)
         game_map[game_str] = game
     
     selected_game_str = st.sidebar.selectbox(
-        "Choose from today's games",
+        f"Upcoming games (next 7 days) - {len(upcoming_games)} found",
         options=game_options,
         help="Select a game to analyze"
     )
@@ -117,7 +120,7 @@ if todays_games:
         
         st.sidebar.info(f"**Matchup:** {selected_team} vs {opponent_abbrev}")
 else:
-    st.sidebar.warning("⚠️ No games scheduled for today")
+    st.sidebar.warning("⚠️ No upcoming games found in the next 7 days")
     st.sidebar.info("You can manually select teams below")
     
     # Manual team selection if no games
@@ -156,15 +159,24 @@ if selected_team and selected_team != "-- Select Team --":
             team_players_df = get_players_by_team(selected_team, season=prior_season)
         
         if not team_players_df.empty:
-            player_names = sorted(team_players_df['full_name'].tolist())
+            # Filter to only players we can find in the database
+            valid_players = []
+            for name in team_players_df['full_name'].tolist():
+                if get_player_id(name):  # Only include if we can find their ID
+                    valid_players.append(name)
             
-            # Select first player as default
-            selected_player = st.sidebar.selectbox(
-                f"Choose player from {selected_team}",
-                options=player_names,
-                index=0,
-                help="Players from the selected team"
-            )
+            player_names = sorted(valid_players)
+            
+            if not player_names:
+                st.sidebar.warning(f"No players found in database for {selected_team}")
+            else:
+                # Select first player as default
+                selected_player = st.sidebar.selectbox(
+                    f"Choose player from {selected_team} ({len(player_names)} available)",
+                    options=player_names,
+                    index=0,
+                    help="Players from the selected team with available data"
+                )
             
             # Get player info
             if selected_player:
@@ -511,7 +523,7 @@ else:
     # Show helpful instructions
     st.markdown("""
     ### How to Use:
-    1. **Select a Game** - Choose from today's scheduled games (if available)
+    1. **Select a Game** - Choose from upcoming games (next 7 days)
     2. **Select a Team** - Pick which team to analyze from the matchup
     3. **Select a Player** - Choose a player from the selected team (default player auto-selected)
     4. **Choose a Stat** - Select the stat you want to predict
