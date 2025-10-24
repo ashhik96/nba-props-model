@@ -377,19 +377,138 @@ def get_player_current_team(player_id, season='2025-26'):
         return None
 
 @st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600)
 def get_player_position(player_id, season='2024-25'):
-    """Get player's position from game logs"""
-    try:
-        rate_limit()
-        gamelog = playergamelog.PlayerGameLog(player_id=player_id, season=season, season_type_all_star='Regular Season')
-        df = gamelog.get_data_frames()[0]
+    """
+    Get player's position with robust multi-position handling
+    
+    For multi-position players, uses FIRST position listed (primary position):
+    - F-G → F (forward who can play guard)
+    - C-F → C (center who can play forward)  
+    - G-F → G (guard who can play forward)
+    
+    This ensures accurate defensive matchup analysis for prop predictions.
+    
+    Returns: 'G', 'F', or 'C'
+    """
+    
+    def simplify_position(pos_string):
+        """Convert any position format to G, F, or C"""
+        if not pos_string or str(pos_string).strip() == '' or str(pos_string) == 'nan':
+            return None
         
-        player_info = players.find_player_by_id(player_id)
-        if player_info:
-            return 'F'  # Default to Forward
+        pos_string = str(pos_string).strip().upper()
+        
+        print(f"🔍 Parsing position: '{pos_string}'")
+        
+        # Multi-position handling (e.g., "G-F", "F-C", "C-F")
+        # Use FIRST position listed (primary position for defensive matchups)
+        if '-' in pos_string:
+            parts = [p.strip() for p in pos_string.split('-')]
+            first_pos = parts[0]
+            
+            print(f"   → Multi-position: {pos_string}")
+            print(f"   → Using PRIMARY (first): {first_pos}")
+            
+            # Parse the first position
+            if 'G' in first_pos:  # G, PG, SG
+                print(f"   → Primary is Guard: returning G")
+                return 'G'
+            elif 'C' in first_pos:  # C
+                print(f"   → Primary is Center: returning C")
+                return 'C'
+            else:  # F, PF, SF
+                print(f"   → Primary is Forward: returning F")
+                return 'F'
+        
+        # Single position
+        if 'G' in pos_string:  # G, PG, SG, Guard
+            print(f"   → Guard: returning G")
+            return 'G'
+        elif 'C' in pos_string:  # C, Center
+            print(f"   → Center: returning C")
+            return 'C'
+        else:  # F, PF, SF, Forward
+            print(f"   → Forward: returning F")
+            return 'F'
+    
+    print(f"\n🏀 Getting position for player_id: {player_id}, season: {season}")
+    
+    try:
+        # METHOD 1: Get from team roster (most reliable!)
+        try:
+            # Get player's most recent game to find their team
+            rate_limit()
+            gamelog = playergamelog.PlayerGameLog(
+                player_id=player_id, 
+                season=season, 
+                season_type_all_star='Regular Season'
+            )
+            df = gamelog.get_data_frames()[0]
+            
+            if not df.empty and 'MATCHUP' in df.columns:
+                matchup = df.iloc[0]['MATCHUP']
+                team_abbrev = matchup.split(' vs. ')[0] if ' vs. ' in matchup else matchup.split(' @ ')[0]
+                
+                print(f"   Team found: {team_abbrev}")
+                
+                # Get roster for this team
+                roster_df = get_players_by_team(team_abbrev, season=season)
+                
+                if not roster_df.empty:
+                    player_row = roster_df[roster_df['player_id'] == player_id]
+                    
+                    if not player_row.empty:
+                        raw_position = player_row.iloc[0]['position']
+                        print(f"   📋 Roster says: '{raw_position}'")
+                        
+                        simplified = simplify_position(raw_position)
+                        if simplified:
+                            print(f"   ✅ Position: {simplified}\n")
+                            return simplified
+        except Exception as e:
+            print(f"   ⚠️ Roster method failed: {e}")
+        
+        # METHOD 2: CommonPlayerInfo
+        try:
+            from nba_api.stats.endpoints import commonplayerinfo
+            rate_limit()
+            
+            player_info = commonplayerinfo.CommonPlayerInfo(player_id=player_id)
+            info_df = player_info.get_data_frames()[0]
+            
+            if not info_df.empty and 'POSITION' in info_df.columns:
+                raw_position = info_df.iloc[0]['POSITION']
+                print(f"   📊 API says: '{raw_position}'")
+                
+                simplified = simplify_position(raw_position)
+                if simplified:
+                    print(f"   ✅ Position: {simplified}\n")
+                    return simplified
+        except Exception as e:
+            print(f"   ⚠️ API method failed: {e}")
+        
+        # METHOD 3: Static data
+        try:
+            player_data = players.find_player_by_id(player_id)
+            if player_data and 'position' in player_data:
+                raw_position = player_data.get('position', '')
+                if raw_position:
+                    print(f"   📁 Static says: '{raw_position}'")
+                    
+                    simplified = simplify_position(raw_position)
+                    if simplified:
+                        print(f"   ✅ Position: {simplified}\n")
+                        return simplified
+        except Exception as e:
+            print(f"   ⚠️ Static method failed: {e}")
+        
+        # All methods failed
+        print(f"   ⚠️ All methods failed - defaulting to F\n")
         return 'F'
+        
     except Exception as e:
-        print(f"Error fetching player position: {e}")
+        print(f"   ❌ ERROR: {e}")
         return 'F'
 
 @st.cache_data(ttl=1800)
