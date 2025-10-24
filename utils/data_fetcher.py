@@ -98,9 +98,134 @@ def get_head_to_head_history(player_id, opponent_abbrev, seasons=['2024-25', '20
         return pd.concat(h2h_games, ignore_index=True)
     return pd.DataFrame()
 
-def fetch_fanduel_lines(api_key=None):
-    """Placeholder for FanDuel lines - requires Odds API key"""
-    return {}
+@st.cache_data(ttl=1800)  # Cache for 30 minutes
+def fetch_fanduel_lines(api_key):
+    """
+    Fetch NBA player props from The Odds API
+    Returns dict with player props organized by market type
+    
+    Note: Player props may require a premium API plan
+    """
+    if not api_key:
+        return {}
+    
+    try:
+        # Step 1: Get upcoming events
+        events_url = "https://api.the-odds-api.com/v4/sports/basketball_nba/events"
+        events_params = {
+            'apiKey': api_key
+        }
+        
+        print("Fetching NBA events...")
+        events_response = requests.get(events_url, params=events_params, timeout=10)
+        
+        if events_response.status_code != 200:
+            print(f"Events API request failed: {events_response.status_code}")
+            print(f"Response: {events_response.text}")
+            return {}
+        
+        events_data = events_response.json()
+        
+        if not events_data:
+            print("No upcoming NBA events found")
+            return {}
+        
+        player_props = {}
+        
+        # Step 2: Try to fetch player props for each event
+        for event in events_data[:5]:  # Limit to first 5 events to save API calls
+            event_id = event.get('id')
+            
+            if not event_id:
+                continue
+            
+            # Try fetching player props for this event
+            props_url = f"https://api.the-odds-api.com/v4/sports/basketball_nba/events/{event_id}/odds"
+            props_params = {
+                'apiKey': api_key,
+                'regions': 'us',
+                'markets': 'player_points,player_rebounds,player_assists,player_threes',
+                'oddsFormat': 'american'
+            }
+            
+            try:
+                props_response = requests.get(props_url, params=props_params, timeout=10)
+                
+                if props_response.status_code == 200:
+                    props_data = props_response.json()
+                    
+                    # Parse bookmakers
+                    for bookmaker in props_data.get('bookmakers', []):
+                        if bookmaker.get('key') != 'fanduel':
+                            continue
+                        
+                        for market in bookmaker.get('markets', []):
+                            market_key = market.get('key')
+                            
+                            for outcome in market.get('outcomes', []):
+                                player_name = outcome.get('description', '')
+                                point_line = outcome.get('point')
+                                
+                                if player_name and point_line:
+                                    if player_name not in player_props:
+                                        player_props[player_name] = {}
+                                    
+                                    stat_map = {
+                                        'player_points': 'PTS',
+                                        'player_rebounds': 'REB',
+                                        'player_assists': 'AST',
+                                        'player_threes': 'FG3M'
+                                    }
+                                    
+                                    stat_name = stat_map.get(market_key)
+                                    if stat_name:
+                                        player_props[player_name][stat_name] = {
+                                            'line': point_line,
+                                            'price': outcome.get('price')
+                                        }
+                
+                elif props_response.status_code == 422:
+                    # Player props not available (likely requires premium plan)
+                    print(f"Player props not available (API plan limitation)")
+                    return {}
+                    
+            except Exception as e:
+                print(f"Error fetching props for event {event_id}: {e}")
+                continue
+        
+        if player_props:
+            print(f"Fetched props for {len(player_props)} players")
+        else:
+            print("No player props available (may require premium API tier)")
+        
+        return player_props
+        
+    except Exception as e:
+        print(f"Error fetching FanDuel lines: {e}")
+        return {}
+
+
+def get_player_fanduel_line(player_name, stat, odds_data):
+    """
+    Get FanDuel line for a specific player and stat
+    
+    Args:
+        player_name: Full player name
+        stat: Stat type (PTS, REB, AST, FG3M)
+        odds_data: Dict from fetch_fanduel_lines()
+    
+    Returns:
+        dict with line and odds, or None
+    """
+    if not odds_data or player_name not in odds_data:
+        return None
+    
+    player_data = odds_data[player_name]
+    
+    if stat not in player_data:
+        return None
+    
+    return player_data[stat]
 
 @st.cache_data(ttl=1800)
 def get_todays_games():

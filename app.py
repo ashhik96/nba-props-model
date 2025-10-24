@@ -14,6 +14,7 @@ from utils.data_fetcher import (
     get_player_game_logs_cached,
     get_team_stats_cached,
     fetch_fanduel_lines,
+    get_player_fanduel_line,
     get_todays_games,
     get_all_nba_teams,
     get_player_current_team,
@@ -392,19 +393,39 @@ if selected_player:
                     st.write(f"**Opponent:** {opponent_abbrev}")
                 
                 # FanDuel Lines
-                st.markdown("---")
-                st.subheader("📊 FanDuel Line & Hit Rate Analysis")
-                
-                col_line1, col_line2 = st.columns(2)
-                
-                with col_line1:
-                    manual_line = st.number_input(
-                        f"Enter FanDuel O/U Line for {selected_stat_display}",
-                        min_value=0.0,
-                        max_value=200.0,
-                        value=season_avg if selected_stat != "DD" else 0.0,
-                        step=0.5
-                    )
+                    st.markdown("---")
+                    st.subheader("📊 FanDuel Line & Hit Rate Analysis")
+
+                    # Fetch odds if API key is provided
+                    fanduel_line_data = None
+                    if api_key:
+                        with st.spinner("Fetching FanDuel lines..."):
+                            odds_data = fetch_fanduel_lines(api_key)
+                            if odds_data:
+                                fanduel_line_data = get_player_fanduel_line(selected_player, selected_stat, odds_data)
+
+                    col_line1, col_line2 = st.columns(2)
+
+                    with col_line1:
+                        # Auto-populate with FanDuel line if available
+                        default_value = season_avg if selected_stat != "DD" else 0.0
+                        
+                        if fanduel_line_data and 'line' in fanduel_line_data:
+                            default_value = fanduel_line_data['line']
+                            st.success(f"✅ FanDuel line found: {default_value}")
+                            if fanduel_line_data.get('over_price'):
+                                st.caption(f"Over: {fanduel_line_data['over_price']:+d} | Under: {fanduel_line_data.get('under_price', 0):+d}")
+                        elif api_key:
+                            st.info("ℹ️ No FanDuel line available for this prop")
+                        
+                        manual_line = st.number_input(
+                            f"FanDuel O/U Line for {selected_stat_display}",
+                            min_value=0.0,
+                            max_value=200.0,
+                            value=float(default_value),
+                            step=0.5,
+                            help="Auto-populated from FanDuel if available, or enter manually"
+                        )
                 
                 with col_line2:
                     if selected_stat != "DD":
@@ -423,42 +444,24 @@ if selected_player:
                         
                         st.markdown(f"**Recommendation:** {recommendation}")
                 
-                # Hit Rate Analysis
-                display_logs = current_logs if has_current_data else prior_logs
-                display_season = current_season if has_current_data else prior_season
-                
-                if selected_stat != "DD" and manual_line > 0 and not display_logs.empty:
-                    st.markdown("---")
-                    st.subheader(f"🎯 Hit Rate vs Current Line ({display_season})")
-                    
-                    col_hit1, col_hit2, col_hit3 = st.columns(3)
-                    
-                    stat_column = selected_stat
-                    if selected_stat == "PRA":
-                        display_logs['PRA'] = display_logs['PTS'] + display_logs['REB'] + display_logs['AST']
-                        stat_column = 'PRA'
-                    
-                    season_hit_rate = calculate_hit_rate(display_logs, stat_column, manual_line)
-                    last5_hit_rate = calculate_hit_rate(display_logs, stat_column, manual_line, last_n=5)
-                    last10_hit_rate = calculate_hit_rate(display_logs, stat_column, manual_line, last_n=10)
-                    
-                    with col_hit1:
-                        st.metric(
-                            "Season Hit Rate (OVER)",
-                            f"{season_hit_rate*100:.1f}%"
-                        )
-                    
-                    with col_hit2:
-                        st.metric(
-                            "Last 5 Games Hit Rate",
-                            f"{last5_hit_rate*100:.1f}%"
-                        )
-                    
-                    with col_hit3:
-                        st.metric(
-                            "Last 10 Games Hit Rate",
-                            f"{last10_hit_rate*100:.1f}%"
-                        )
+                # Hit Rate Analysis - combine seasons intelligently
+                if has_current_data and len(current_logs) >= 10:
+                    # Enough current season games
+                    display_logs = current_logs
+                    display_season = current_season
+                elif has_current_data and len(current_logs) < 10:
+                    # Current season exists but < 10 games, combine with prior season
+                    games_needed = 10 - len(current_logs)
+                    combined_logs = pd.concat([
+                        current_logs,
+                        prior_logs.head(games_needed)
+                    ], ignore_index=True)
+                    display_logs = combined_logs
+                    display_season = f"{current_season} + {prior_season}"
+                else:
+                    # No current season data, use prior season
+                    display_logs = prior_logs
+                    display_season = prior_season
                 
                 # Head-to-Head Analysis
                 if h2h_games > 0 and selected_stat != "DD":
@@ -502,13 +505,30 @@ if selected_player:
                 
                 # Game log table
                 st.markdown("---")
-                st.subheader(f"📋 Recent Game Log ({display_season})")
-                
+                st.subheader(f"📋 Recent Game Log (Last 10 Games)")
+
+                # Combine current and prior season to always show 10 games
+                if has_current_data and len(current_logs) >= 10:
+                    recent_game_logs = current_logs.head(10)
+                    season_label = current_season
+                elif has_current_data and len(current_logs) < 10:
+                    games_needed = 10 - len(current_logs)
+                    recent_game_logs = pd.concat([
+                        current_logs,
+                        prior_logs.head(games_needed)
+                    ], ignore_index=True)
+                    season_label = f"{current_season} + {prior_season}"
+                else:
+                    recent_game_logs = prior_logs.head(10)
+                    season_label = prior_season
+
+                st.caption(f"Showing games from: {season_label}")
+
                 display_cols = ['GAME_DATE', 'MATCHUP', 'MIN', 'PTS', 'REB', 'AST', 'FG3M', 'FGA', 'FG_PCT']
-                available_cols = [col for col in display_cols if col in display_logs.columns]
-                
+                available_cols = [col for col in display_cols if col in recent_game_logs.columns]
+
                 if available_cols:
-                    recent_games = display_logs.head(10)[available_cols].copy()
+                    recent_games = recent_game_logs[available_cols].copy()
                     
                     if 'PTS' in recent_games.columns and 'REB' in recent_games.columns and 'AST' in recent_games.columns:
                         recent_games['PRA'] = recent_games['PTS'] + recent_games['REB'] + recent_games['AST']
