@@ -14,6 +14,7 @@ from utils.data_fetcher import (
     get_player_game_logs_cached,
     get_team_stats_cached,
     fetch_fanduel_lines,
+    get_player_fanduel_line,
     get_todays_games,
     get_all_nba_teams,
     get_player_current_team,
@@ -21,7 +22,9 @@ from utils.data_fetcher import (
     get_head_to_head_history,
     get_player_position,
     scrape_defense_vs_position,
-    get_team_defense_rank_vs_position
+    get_team_defense_rank_vs_position,
+    get_players_by_team,
+    get_upcoming_games
 )
 from utils.features import (
     calculate_season_averages,
@@ -70,29 +73,135 @@ model = load_model()
 current_season = "2025-26"  # Current season (just started)
 prior_season = "2024-25"    # Last full season
 
-# Load players
-@st.cache_data(ttl=3600)
-def load_players():
-    players_df = get_all_active_players()
-    active_players_df = players_df[players_df['is_active'] == True]
-    return active_players_df
+# Get upcoming games (next 7 days)
+upcoming_games = get_upcoming_games(days=7)
 
-try:
-    players_df = load_players()
-    player_names = sorted(players_df['full_name'].tolist())
-except Exception as e:
-    st.error(f"Error loading players: {e}")
-    player_names = []
+# STEP 1: Game Selection
+st.sidebar.subheader("🏀 Select Upcoming Game")
 
-# Player selection
-st.sidebar.subheader("🎯 Select Player")
-selected_player = st.sidebar.selectbox(
-    "Choose a player",
-    options=player_names,
-    index=0 if player_names else None
-)
+selected_game = None
+selected_team = None
+opponent_abbrev = None
+
+if upcoming_games:
+    game_options = ["-- Select a Game --"]
+    game_map = {}
+    
+    for idx, game in enumerate(upcoming_games):
+        # Format: "Wed, Oct 23 - LAL @ BOS (7:30 PM)"
+        time_str = f" ({game['time_display']})" if game.get('time_display') else ""
+        game_str = f"{game['date_display']} - {game['away']} @ {game['home']}{time_str}"
+        game_options.append(game_str)
+        game_map[game_str] = game
+    
+    selected_game_str = st.sidebar.selectbox(
+        f"Upcoming games (next 7 days) - {len(upcoming_games)} found",
+        options=game_options,
+        help="Select a game to analyze"
+    )
+    
+    if selected_game_str != "-- Select a Game --":
+        selected_game = game_map[selected_game_str]
+        
+        # STEP 2: Team Selection (from the selected game)
+        st.sidebar.subheader("🏟️ Select Team to Analyze")
+        
+        team_options = [selected_game['home'], selected_game['away']]
+        selected_team = st.sidebar.radio(
+            "Which team's player to analyze?",
+            options=team_options,
+            format_func=lambda x: f"🏠 {x}" if x == selected_game['home'] else f"✈️ {x}"
+        )
+        
+        # Set opponent based on selected team
+        if selected_team == selected_game['home']:
+            opponent_abbrev = selected_game['away']
+        else:
+            opponent_abbrev = selected_game['home']
+        
+        st.sidebar.info(f"**Matchup:** {selected_team} vs {opponent_abbrev}")
+else:
+    st.sidebar.warning("⚠️ No upcoming games found in the next 7 days")
+    st.sidebar.info("You can manually select teams below")
+    
+    # Manual team selection if no games
+    st.sidebar.subheader("🏟️ Manual Team Selection")
+    all_teams = get_all_nba_teams()
+    
+    selected_team = st.sidebar.selectbox(
+        "Select team to analyze",
+        options=["-- Select Team --"] + all_teams
+    )
+    
+    if selected_team and selected_team != "-- Select Team --":
+        available_opponents = [team for team in all_teams if team != selected_team]
+        opponent_abbrev = st.sidebar.selectbox(
+            "Select opponent",
+            options=["-- Select Opponent --"] + available_opponents
+        )
+        if opponent_abbrev == "-- Select Opponent --":
+            opponent_abbrev = None
+
+# STEP 3: Player Selection (from the selected team)
+selected_player = None
+player_team = None
+player_position = 'F'
+
+if selected_team and selected_team != "-- Select Team --":
+    st.sidebar.subheader("🎯 Select Player")
+    player_team = selected_team
+    
+    with st.spinner(f"Loading players from {selected_team}..."):
+        # Get players from the selected team
+        team_players_df = get_players_by_team(selected_team, season=current_season)
+        
+        # If current season roster is empty, try prior season
+        if team_players_df.empty:
+            team_players_df = get_players_by_team(selected_team, season=prior_season)
+        
+        if not team_players_df.empty:
+            # Filter to only players we can find in the database
+            valid_players = []
+            for name in team_players_df['full_name'].tolist():
+                if get_player_id(name):  # Only include if we can find their ID
+                    valid_players.append(name)
+            
+            player_names = sorted(valid_players)
+            
+            if not player_names:
+                st.sidebar.warning(f"No players found in database for {selected_team}")
+            else:
+                # Select first player as default
+                selected_player = st.sidebar.selectbox(
+                    f"Choose player from {selected_team} ({len(player_names)} available)",
+                    options=player_names,
+                    index=0,
+                    help="Players from the selected team with available data"
+                )
+            
+            # Get player info
+            if selected_player:
+                player_id = get_player_id(selected_player)
+                if player_id:
+                    player_position = get_player_position(player_id, season=prior_season)
+                    st.sidebar.success(f"✅ {selected_player} ({player_position})")
+        else:
+            st.sidebar.error(f"Could not load roster for {selected_team}")
+            # Fallback to all players
+            try:
+                all_players_df = get_all_active_players()
+                active_players_df = all_players_df[all_players_df['is_active'] == True]
+                player_names = sorted(active_players_df['full_name'].tolist())
+                selected_player = st.sidebar.selectbox(
+                    "Choose any player",
+                    options=player_names,
+                    index=0
+                )
+            except Exception as e:
+                st.sidebar.error(f"Error loading players: {e}")
 
 # Stat selection
+st.sidebar.subheader("📊 Stat to Predict")
 stat_options = {
     "Points": "PTS",
     "Assists": "AST",
@@ -107,72 +216,6 @@ selected_stat_display = st.sidebar.selectbox(
     options=list(stat_options.keys())
 )
 selected_stat = stat_options[selected_stat_display]
-
-# Opponent selection
-st.sidebar.subheader("🏟️ Matchup Info")
-
-player_team = None
-opponent_abbrev = None
-player_position = 'F'
-
-if selected_player:
-    player_id = get_player_id(selected_player)
-    if player_id:
-        with st.spinner("Detecting player's team..."):
-            player_team = get_player_current_team(player_id, season=current_season)
-            if not player_team:
-                player_team = get_player_current_team(player_id, season=prior_season)
-            
-            player_position = get_player_position(player_id, season=prior_season)
-        
-        if player_team:
-            st.sidebar.info(f"**{selected_player}** plays for **{player_team}** ({player_position})")
-
-# Get today's games
-todays_games = get_todays_games()
-
-# Filter games for player's team
-relevant_games = []
-if player_team and todays_games:
-    for game in todays_games:
-        if player_team in [game['home'], game['away']]:
-            relevant_games.append(game)
-
-# Show relevant games
-if relevant_games:
-    st.sidebar.success(f"🎯 **Next Game Found!**")
-    for game in relevant_games:
-        if player_team == game['home']:
-            opponent_abbrev = game['away']
-            st.sidebar.markdown(f"**{player_team}** vs **{opponent_abbrev}** (Home)")
-        else:
-            opponent_abbrev = game['home']
-            st.sidebar.markdown(f"**{player_team}** @ **{opponent_abbrev}** (Away)")
-    
-    change_opponent = st.sidebar.checkbox("Choose different opponent")
-    if change_opponent:
-        opponent_abbrev = None
-else:
-    st.sidebar.info("📅 Select opponent below for next matchup")
-
-# Manual opponent selection
-if opponent_abbrev is None:
-    st.sidebar.markdown("**Select Opponent:**")
-    all_teams = get_all_nba_teams()
-    
-    if player_team:
-        available_opponents = [team for team in all_teams if team != player_team]
-    else:
-        available_opponents = all_teams
-    
-    manual_opponent = st.sidebar.selectbox(
-        "Choose opponent team",
-        options=["-- Select Opponent --"] + available_opponents,
-        help="Select the opposing team"
-    )
-    
-    if manual_opponent != "-- Select Opponent --":
-        opponent_abbrev = manual_opponent
 
 # Main content
 if selected_player:
@@ -350,19 +393,39 @@ if selected_player:
                     st.write(f"**Opponent:** {opponent_abbrev}")
                 
                 # FanDuel Lines
-                st.markdown("---")
-                st.subheader("📊 FanDuel Line & Hit Rate Analysis")
-                
-                col_line1, col_line2 = st.columns(2)
-                
-                with col_line1:
-                    manual_line = st.number_input(
-                        f"Enter FanDuel O/U Line for {selected_stat_display}",
-                        min_value=0.0,
-                        max_value=200.0,
-                        value=season_avg if selected_stat != "DD" else 0.0,
-                        step=0.5
-                    )
+                    st.markdown("---")
+                    st.subheader("📊 FanDuel Line & Hit Rate Analysis")
+
+                    # Fetch odds if API key is provided
+                    fanduel_line_data = None
+                    if api_key:
+                        with st.spinner("Fetching FanDuel lines..."):
+                            odds_data = fetch_fanduel_lines(api_key)
+                            if odds_data:
+                                fanduel_line_data = get_player_fanduel_line(selected_player, selected_stat, odds_data)
+
+                    col_line1, col_line2 = st.columns(2)
+
+                    with col_line1:
+                        # Auto-populate with FanDuel line if available
+                        default_value = season_avg if selected_stat != "DD" else 0.0
+                        
+                        if fanduel_line_data and 'line' in fanduel_line_data:
+                            default_value = fanduel_line_data['line']
+                            st.success(f"✅ FanDuel line found: {default_value}")
+                            if fanduel_line_data.get('over_price'):
+                                st.caption(f"Over: {fanduel_line_data['over_price']:+d} | Under: {fanduel_line_data.get('under_price', 0):+d}")
+                        elif api_key:
+                            st.info("ℹ️ No FanDuel line available for this prop")
+                        
+                        manual_line = st.number_input(
+                            f"FanDuel O/U Line for {selected_stat_display}",
+                            min_value=0.0,
+                            max_value=200.0,
+                            value=float(default_value),
+                            step=0.5,
+                            help="Auto-populated from FanDuel if available, or enter manually"
+                        )
                 
                 with col_line2:
                     if selected_stat != "DD":
@@ -381,42 +444,24 @@ if selected_player:
                         
                         st.markdown(f"**Recommendation:** {recommendation}")
                 
-                # Hit Rate Analysis
-                display_logs = current_logs if has_current_data else prior_logs
-                display_season = current_season if has_current_data else prior_season
-                
-                if selected_stat != "DD" and manual_line > 0 and not display_logs.empty:
-                    st.markdown("---")
-                    st.subheader(f"🎯 Hit Rate vs Current Line ({display_season})")
-                    
-                    col_hit1, col_hit2, col_hit3 = st.columns(3)
-                    
-                    stat_column = selected_stat
-                    if selected_stat == "PRA":
-                        display_logs['PRA'] = display_logs['PTS'] + display_logs['REB'] + display_logs['AST']
-                        stat_column = 'PRA'
-                    
-                    season_hit_rate = calculate_hit_rate(display_logs, stat_column, manual_line)
-                    last5_hit_rate = calculate_hit_rate(display_logs, stat_column, manual_line, last_n=5)
-                    last10_hit_rate = calculate_hit_rate(display_logs, stat_column, manual_line, last_n=10)
-                    
-                    with col_hit1:
-                        st.metric(
-                            "Season Hit Rate (OVER)",
-                            f"{season_hit_rate*100:.1f}%"
-                        )
-                    
-                    with col_hit2:
-                        st.metric(
-                            "Last 5 Games Hit Rate",
-                            f"{last5_hit_rate*100:.1f}%"
-                        )
-                    
-                    with col_hit3:
-                        st.metric(
-                            "Last 10 Games Hit Rate",
-                            f"{last10_hit_rate*100:.1f}%"
-                        )
+                # Hit Rate Analysis - combine seasons intelligently
+                if has_current_data and len(current_logs) >= 10:
+                    # Enough current season games
+                    display_logs = current_logs
+                    display_season = current_season
+                elif has_current_data and len(current_logs) < 10:
+                    # Current season exists but < 10 games, combine with prior season
+                    games_needed = 10 - len(current_logs)
+                    combined_logs = pd.concat([
+                        current_logs,
+                        prior_logs.head(games_needed)
+                    ], ignore_index=True)
+                    display_logs = combined_logs
+                    display_season = f"{current_season} + {prior_season}"
+                else:
+                    # No current season data, use prior season
+                    display_logs = prior_logs
+                    display_season = prior_season
                 
                 # Head-to-Head Analysis
                 if h2h_games > 0 and selected_stat != "DD":
@@ -460,13 +505,30 @@ if selected_player:
                 
                 # Game log table
                 st.markdown("---")
-                st.subheader(f"📋 Recent Game Log ({display_season})")
-                
+                st.subheader(f"📋 Recent Game Log (Last 10 Games)")
+
+                # Combine current and prior season to always show 10 games
+                if has_current_data and len(current_logs) >= 10:
+                    recent_game_logs = current_logs.head(10)
+                    season_label = current_season
+                elif has_current_data and len(current_logs) < 10:
+                    games_needed = 10 - len(current_logs)
+                    recent_game_logs = pd.concat([
+                        current_logs,
+                        prior_logs.head(games_needed)
+                    ], ignore_index=True)
+                    season_label = f"{current_season} + {prior_season}"
+                else:
+                    recent_game_logs = prior_logs.head(10)
+                    season_label = prior_season
+
+                st.caption(f"Showing games from: {season_label}")
+
                 display_cols = ['GAME_DATE', 'MATCHUP', 'MIN', 'PTS', 'REB', 'AST', 'FG3M', 'FGA', 'FG_PCT']
-                available_cols = [col for col in display_cols if col in display_logs.columns]
-                
+                available_cols = [col for col in display_cols if col in recent_game_logs.columns]
+
                 if available_cols:
-                    recent_games = display_logs.head(10)[available_cols].copy()
+                    recent_games = recent_game_logs[available_cols].copy()
                     
                     if 'PTS' in recent_games.columns and 'REB' in recent_games.columns and 'AST' in recent_games.columns:
                         recent_games['PRA'] = recent_games['PTS'] + recent_games['REB'] + recent_games['AST']
@@ -476,7 +538,17 @@ if selected_player:
     else:
         st.error(f"Could not find player ID for {selected_player}")
 else:
-    st.info("👈 Select a player from the sidebar to begin")
+    st.info("👈 Select a game and team from the sidebar to begin")
+    
+    # Show helpful instructions
+    st.markdown("""
+    ### How to Use:
+    1. **Select a Game** - Choose from upcoming games (next 7 days)
+    2. **Select a Team** - Pick which team to analyze from the matchup
+    3. **Select a Player** - Choose a player from the selected team (default player auto-selected)
+    4. **Choose a Stat** - Select the stat you want to predict
+    5. **View Projections** - Get AI-powered predictions and analysis
+    """)
 
 # Footer
 st.markdown("---")
