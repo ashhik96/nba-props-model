@@ -716,6 +716,20 @@ def get_team_defense_rank_vs_position(team_abbrev, player_position, def_vs_pos_d
         'F': ['SF', 'PF'],  # Forwards  
         'C': ['C']          # Centers
     }
+
+    # Team abbreviation mapping (NBA API → HashtagBasketball)
+    team_abbrev_map = {
+        'NYK': 'NY',   # New York Knicks
+        'NOP': 'NO',   # New Orleans Pelicans
+        'SAS': 'SA',   # San Antonio Spurs
+        'GSW': 'GS',   # Golden State Warriors
+        'PHX': 'PHO',  # Phoenix Suns
+        # These already match:
+        # BKN, CHA, BOS, LAL, etc. - use as is
+    }
+    
+    # Use mapped abbreviation if it exists, otherwise use original
+    search_team = team_abbrev_map.get(team_abbrev, team_abbrev)
     
     positions_to_check = position_mapping.get(player_position, ['SF'])
     
@@ -723,7 +737,7 @@ def get_team_defense_rank_vs_position(team_abbrev, player_position, def_vs_pos_d
     all_data = []
     for pos in positions_to_check:
         team_data = def_vs_pos_df[
-            (def_vs_pos_df['Team'] == team_abbrev) & 
+            (def_vs_pos_df['Team'] == search_team) &  # Changed from team_abbrev
             (def_vs_pos_df['Position'] == pos)
         ]
         
