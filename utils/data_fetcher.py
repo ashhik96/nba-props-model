@@ -98,113 +98,178 @@ def get_head_to_head_history(player_id, opponent_abbrev, seasons=['2024-25', '20
         return pd.concat(h2h_games, ignore_index=True)
     return pd.DataFrame()
 
-@st.cache_data(ttl=1800)  # Cache for 30 minutes
-def fetch_fanduel_lines(api_key):
+@st.cache_data(ttl=1800)
+def fetch_fanduel_lines(event_id, api_key="f6aac04a6ab847bab31a7db076ef89e8"):
     """
-    Fetch NBA player props from The Odds API
-    Returns dict with player props organized by market type
+    Fetch player props for a specific NBA event from The Odds API
     
-    Note: Player props may require a premium API plan
+    Args:
+        event_id: The Odds API event ID
+        api_key: Odds API key (hardcoded)
+    
+    Returns:
+        dict: {player_name: {stat: {'line': float, 'price': int}}}
     """
-    if not api_key:
+    if not event_id or not api_key:
         return {}
     
     try:
-        # Step 1: Get upcoming events
-        events_url = "https://api.the-odds-api.com/v4/sports/basketball_nba/events"
-        events_params = {
-            'apiKey': api_key
+        url = f"https://api.the-odds-api.com/v4/sports/basketball_nba/events/{event_id}/odds"
+        params = {
+            'apiKey': api_key,
+            'regions': 'us',
+            'bookmakers': 'fanduel',
+            'markets': 'player_points,player_assists,player_rebounds,player_threes,player_points_rebounds_assists',
+            'oddsFormat': 'american'
         }
+
+        print(f"🔍 Fetching player props for event {event_id}...")
+        response = requests.get(url, params=params, timeout=15)
         
-        print("Fetching NBA events...")
-        events_response = requests.get(events_url, params=events_params, timeout=10)
-        
-        if events_response.status_code != 200:
-            print(f"Events API request failed: {events_response.status_code}")
-            print(f"Response: {events_response.text}")
+        if response.status_code != 200:
+            print(f"❌ API Error {response.status_code}: {response.text}")
             return {}
         
-        events_data = events_response.json()
-        
-        if not events_data:
-            print("No upcoming NBA events found")
-            return {}
+        data = response.json()
+        print(f"✅ Got odds response")
         
         player_props = {}
         
-        # Step 2: Try to fetch player props for each event
-        for event in events_data[:5]:  # Limit to first 5 events to save API calls
-            event_id = event.get('id')
-            
-            if not event_id:
+        for bookmaker in data.get('bookmakers', []):
+            if bookmaker.get('key') != 'fanduel':
                 continue
             
-            # Try fetching player props for this event
-            props_url = f"https://api.the-odds-api.com/v4/sports/basketball_nba/events/{event_id}/odds"
-            props_params = {
-                'apiKey': api_key,
-                'regions': 'us',
-                'markets': 'player_points,player_rebounds,player_assists,player_threes',
-                'oddsFormat': 'american'
-            }
+            print(f"📊 Found FanDuel odds")
             
-            try:
-                props_response = requests.get(props_url, params=props_params, timeout=10)
+            for market in bookmaker.get('markets', []):
+                market_key = market.get('key')
                 
-                if props_response.status_code == 200:
-                    props_data = props_response.json()
+                stat_map = {
+                    'player_points': 'PTS',
+                    'player_assists': 'AST',
+                    'player_rebounds': 'REB',
+                    'player_threes': 'FG3M',
+                    'player_points_rebounds_assists': 'PRA'
+                }
+                
+                stat_code = stat_map.get(market_key)
+                if not stat_code:
+                    continue
+                
+                print(f"   Market: {market_key} ({len(market.get('outcomes', []))} players)")
+                
+                for outcome in market.get('outcomes', []):
+                    player_name = outcome.get('description', '')
+                    line = outcome.get('point')
+                    price = outcome.get('price')
+                    outcome_type = outcome.get('name', '')  # "Over" or "Under"
                     
-                    # Parse bookmakers
-                    for bookmaker in props_data.get('bookmakers', []):
-                        if bookmaker.get('key') != 'fanduel':
-                            continue
+                    if player_name and line is not None:
+                        if player_name not in player_props:
+                            player_props[player_name] = {}
                         
-                        for market in bookmaker.get('markets', []):
-                            market_key = market.get('key')
-                            
-                            for outcome in market.get('outcomes', []):
-                                player_name = outcome.get('description', '')
-                                point_line = outcome.get('point')
-                                
-                                if player_name and point_line:
-                                    if player_name not in player_props:
-                                        player_props[player_name] = {}
-                                    
-                                    stat_map = {
-                                        'player_points': 'PTS',
-                                        'player_rebounds': 'REB',
-                                        'player_assists': 'AST',
-                                        'player_threes': 'FG3M'
-                                    }
-                                    
-                                    stat_name = stat_map.get(market_key)
-                                    if stat_name:
-                                        player_props[player_name][stat_name] = {
-                                            'line': point_line,
-                                            'price': outcome.get('price')
-                                        }
-                
-                elif props_response.status_code == 422:
-                    # Player props not available (likely requires premium plan)
-                    print(f"Player props not available (API plan limitation)")
-                    return {}
-                    
-            except Exception as e:
-                print(f"Error fetching props for event {event_id}: {e}")
-                continue
-        
-        if player_props:
-            print(f"Fetched props for {len(player_props)} players")
-        else:
-            print("No player props available (may require premium API tier)")
-        
+                        if stat_code not in player_props[player_name]:
+                            player_props[player_name][stat_code] = {
+                                'line': float(line),
+                                'over_price': None,
+                                'under_price': None
+                            }
+                        
+                        # Store both over and under prices
+                        if outcome_type == 'Over':
+                            player_props[player_name][stat_code]['over_price'] = price
+                        elif outcome_type == 'Under':
+                            player_props[player_name][stat_code]['under_price'] = price
+
+        print(f"✅ Parsed props for {len(player_props)} players")
         return player_props
         
     except Exception as e:
-        print(f"Error fetching FanDuel lines: {e}")
+        print(f"❌ Error fetching FanDuel lines: {e}")
+        import traceback
+        traceback.print_exc()
         return {}
 
-
+@st.cache_data(ttl=3600)
+def get_event_id_for_game(home_team, away_team, api_key="f6aac04a6ab847bab31a7db076ef89e8"):
+    """
+    Get The Odds API event ID for a specific NBA game
+    
+    Args:
+        home_team: Home team abbreviation (e.g., 'LAL')
+        away_team: Away team abbreviation (e.g., 'BOS')
+        api_key: Odds API key (hardcoded)
+    
+    Returns:
+        str: Event ID or None
+    """
+    try:
+        url = "https://api.the-odds-api.com/v4/sports/basketball_nba/events"
+        params = {'apiKey': api_key}
+        
+        print(f"🔍 Looking for event: {away_team} @ {home_team}")
+        response = requests.get(url, params=params, timeout=10)
+        
+        if response.status_code != 200:
+            print(f"❌ Events API error: {response.status_code}")
+            return None
+        
+        events = response.json()
+        
+        # Team abbreviation to full name mapping
+        team_name_map = {
+            'LAL': 'Los Angeles Lakers',
+            'MIN': 'Minnesota Timberwolves',
+            'BOS': 'Boston Celtics',
+            'NYK': 'New York Knicks',
+            'BKN': 'Brooklyn Nets',
+            'PHI': 'Philadelphia 76ers',
+            'MIA': 'Miami Heat',
+            'MIL': 'Milwaukee Bucks',
+            'GSW': 'Golden State Warriors',
+            'LAC': 'LA Clippers',
+            'CHI': 'Chicago Bulls',
+            'CLE': 'Cleveland Cavaliers',
+            'DET': 'Detroit Pistons',
+            'IND': 'Indiana Pacers',
+            'ATL': 'Atlanta Hawks',
+            'CHA': 'Charlotte Hornets',
+            'WAS': 'Washington Wizards',
+            'ORL': 'Orlando Magic',
+            'TOR': 'Toronto Raptors',
+            'SAC': 'Sacramento Kings',
+            'PHX': 'Phoenix Suns',
+            'POR': 'Portland Trail Blazers',
+            'DEN': 'Denver Nuggets',
+            'UTA': 'Utah Jazz',
+            'OKC': 'Oklahoma City Thunder',
+            'DAL': 'Dallas Mavericks',
+            'HOU': 'Houston Rockets',
+            'SAS': 'San Antonio Spurs',
+            'MEM': 'Memphis Grizzlies',
+            'NOP': 'New Orleans Pelicans'
+        }
+        
+        home_full = team_name_map.get(home_team, home_team)
+        away_full = team_name_map.get(away_team, away_team)
+        
+        for event in events:
+            event_home = event.get('home_team', '')
+            event_away = event.get('away_team', '')
+            
+            # Match by full team names
+            if (home_full in event_home and away_full in event_away):
+                event_id = event.get('id')
+                print(f"✅ Found event ID: {event_id}")
+                return event_id
+        
+        print(f"⚠️ No event found for {away_team} @ {home_team}")
+        return None
+        
+    except Exception as e:
+        print(f"❌ Error getting event ID: {e}")
+        return None
+    
 def get_player_fanduel_line(player_name, stat, odds_data):
     """
     Get FanDuel line for a specific player and stat

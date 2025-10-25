@@ -14,6 +14,7 @@ from utils.data_fetcher import (
     get_player_game_logs_cached,
     get_team_stats_cached,
     fetch_fanduel_lines,
+    get_event_id_for_game,
     get_player_fanduel_line,
     get_todays_games,
     get_all_nba_teams,
@@ -49,18 +50,6 @@ st.markdown("### Advanced predictions using historical data, matchup analysis, a
 # Sidebar for inputs
 st.sidebar.header("⚙️ Settings")
 
-# API Key input
-if 'odds_api_key' not in st.session_state:
-    st.session_state.odds_api_key = ""
-
-api_key = st.sidebar.text_input(
-    "Odds API Key (optional)",
-    value=st.session_state.odds_api_key,
-    type="password",
-    help="Enter your Odds API key to fetch FanDuel lines"
-)
-st.session_state.odds_api_key = api_key
-
 # Initialize model
 @st.cache_resource
 def load_model():
@@ -69,9 +58,29 @@ def load_model():
 
 model = load_model()
 
-# Season setup
-current_season = "2025-26"  # Current season (just started)
-prior_season = "2024-25"    # Last full season
+# Season setup - automatically determined
+from datetime import datetime
+
+def get_current_nba_season():
+    """Determine current NBA season based on date"""
+    now = datetime.now()
+    year = now.year
+    month = now.month
+    
+    # NBA season starts in October
+    if month >= 10:  # Oct-Dec
+        return f"{year}-{str(year + 1)[2:]}"
+    else:  # Jan-Sep
+        return f"{year - 1}-{str(year)[2:]}"
+
+def get_prior_nba_season():
+    """Get previous NBA season"""
+    current = get_current_nba_season()
+    start_year = int(current.split('-')[0])
+    return f"{start_year - 1}-{str(start_year)[2:]}"
+
+current_season = get_current_nba_season()  # Auto: "2024-25" 
+prior_season = get_prior_nba_season()      # Auto: "2023-24"
 
 # Get upcoming games (next 7 days)
 upcoming_games = get_upcoming_games(days=7)
@@ -373,7 +382,7 @@ if selected_player:
                     season_avg = features.get(f'{selected_stat}_avg', 0)
                     last5_avg = features.get(f'{selected_stat}_last5', 0)
                     last10_avg = features.get(f'{selected_stat}_last10', 0)
-                    
+
                     if selected_stat != "DD":
                         st.write(f"**Season Average:** {season_avg:.1f}")
                         st.write(f"**Last 5 Games:** {last5_avg:.1f}")
@@ -396,13 +405,33 @@ if selected_player:
                     st.markdown("---")
                     st.subheader("📊 FanDuel Line & Hit Rate Analysis")
 
-                    # Fetch odds if API key is provided
+                    # Fetch FanDuel lines using event ID
                     fanduel_line_data = None
-                    if api_key:
-                        with st.spinner("Fetching FanDuel lines..."):
-                            odds_data = fetch_fanduel_lines(api_key)
-                            if odds_data:
-                                fanduel_line_data = get_player_fanduel_line(selected_player, selected_stat, odds_data)
+                    
+                    # Get event ID for this game
+                    if False: #selected_game:
+                        home_team = selected_game['home']
+                        away_team = selected_game['away']
+                        
+                        # Check if we already fetched lines for this game
+                        cache_key = f"{away_team}@{home_team}"
+                        if 'fanduel_cache' not in st.session_state:
+                            st.session_state.fanduel_cache = {}
+                        
+                        if cache_key not in st.session_state.fanduel_cache:
+                            with st.spinner("Fetching FanDuel lines..."):
+                                event_id = get_event_id_for_game(home_team, away_team)
+                                if event_id:
+                                    odds_data = fetch_fanduel_lines(event_id)
+                                    st.session_state.fanduel_cache[cache_key] = odds_data
+                                else:
+                                    st.session_state.fanduel_cache[cache_key] = {}
+                        
+                        # Get line for this player
+                        odds_data = st.session_state.fanduel_cache.get(cache_key, {})
+                        if odds_data and selected_player in odds_data:
+                            if selected_stat in odds_data[selected_player]:
+                                fanduel_line_data = odds_data[selected_player][selected_stat]
 
                     col_line1, col_line2 = st.columns(2)
 
@@ -412,14 +441,20 @@ if selected_player:
                         
                         if fanduel_line_data and 'line' in fanduel_line_data:
                             default_value = fanduel_line_data['line']
-                            st.success(f"✅ FanDuel line found: {default_value}")
-                            if fanduel_line_data.get('over_price'):
-                                st.caption(f"Over: {fanduel_line_data['over_price']:+d} | Under: {fanduel_line_data.get('under_price', 0):+d}")
-                        elif api_key:
+                            st.success(f"✅ FanDuel line: {default_value}")
+                            
+                            over_price = fanduel_line_data.get('over_price')
+                            under_price = fanduel_line_data.get('under_price')
+                            
+                            if over_price and under_price:
+                                st.caption(f"Over: {over_price:+d} | Under: {under_price:+d}")
+                            elif over_price:
+                                st.caption(f"Over: {over_price:+d}")
+                        else:
                             st.info("ℹ️ No FanDuel line available for this prop")
                         
                         manual_line = st.number_input(
-                            f"FanDuel O/U Line for {selected_stat_display}",
+                            f"O/U Line for {selected_stat_display}",
                             min_value=0.0,
                             max_value=200.0,
                             value=float(default_value),
@@ -467,36 +502,35 @@ if selected_player:
                 if h2h_games > 0 and selected_stat != "DD":
                     st.markdown("---")
                     st.subheader(f"🔥 Head-to-Head vs {opponent_abbrev}")
-                    
+                   
                     h2h_avg = features.get(f'h2h_{selected_stat}_avg', 0)
                     h2h_trend = features.get(f'h2h_{selected_stat}_trend', 0)
-                    
+                   
                     col_h2h1, col_h2h2 = st.columns(2)
-                    
+                   
                     with col_h2h1:
-                        st.metric(
-                            f"Career Avg vs {opponent_abbrev}",
-                            f"{h2h_avg:.1f}",
-                            delta=f"{h2h_avg - season_avg:+.1f} vs season avg"
-                        )
-                    
+                        st.markdown("**Average vs Opponent**")
+                        st.markdown(f"### Avg: {h2h_avg:.1f} ({h2h_games} games)")
+                        
+                        diff = h2h_avg - season_avg
+                        color = "green" if diff > 0 else "red"
+                        st.markdown(f":{color}[{diff:+.1f} vs season avg]")
+                   
                     with col_h2h2:
+                        st.markdown("**Recent Trend**")
                         if abs(h2h_trend) > 1:
-                            trend_text = "Trending UP" if h2h_trend > 0 else "Trending DOWN"
-                            st.metric(
-                                "Recent Trend vs Them",
-                                trend_text,
-                                delta=f"{h2h_trend:+.1f}"
-                            )
+                            trend_text = "📈 Trending UP" if h2h_trend > 0 else "📉 Trending DOWN"
+                            st.markdown(f"### {trend_text}")
+                            st.markdown(f":{('green' if h2h_trend > 0 else 'red')}[{h2h_trend:+.1f}]")
                         else:
-                            st.metric("Recent Trend vs Them", "Consistent")
-                    
+                            st.markdown("### ➡️ Consistent")
+                   
                     # Show recent h2h games
                     if not h2h_history.empty:
-                        st.write("**Recent Games vs Opponent:**")
+                        st.markdown("**Recent Games vs Opponent:**")
                         h2h_display_cols = ['GAME_DATE', 'MATCHUP', 'PTS', 'REB', 'AST', 'FG3M']
                         available_h2h_cols = [col for col in h2h_display_cols if col in h2h_history.columns]
-                        
+                       
                         if available_h2h_cols:
                             recent_h2h = h2h_history.head(5)[available_h2h_cols].copy()
                             if 'PTS' in recent_h2h.columns and 'REB' in recent_h2h.columns and 'AST' in recent_h2h.columns:

@@ -53,10 +53,18 @@ def calculate_season_averages(game_logs_df):
 
 def calculate_last_n_average(game_logs_df, n=5):
     """Calculate last N games average"""
-    if game_logs_df.empty or len(game_logs_df) < n:
-        return calculate_season_averages(game_logs_df)
+    if game_logs_df.empty:
+        return {
+            f'PTS_last{n}': 0,
+            f'AST_last{n}': 0,
+            f'REB_last{n}': 0,
+            f'FG3M_last{n}': 0,
+            f'PRA_last{n}': 0,
+            f'MIN_last{n}': 0
+        }
     
-    last_n = game_logs_df.head(n)
+    # Use available games even if less than n
+    last_n = game_logs_df.head(min(n, len(game_logs_df)))
     stats = {
         f'PTS_last{n}': last_n['PTS'].mean(),
         f'AST_last{n}': last_n['AST'].mean(),
@@ -304,18 +312,31 @@ def build_enhanced_feature_vector(
         prior_val = prior_stats.get(stat, 0)
         features[stat] = (weight_current * current_val) + (weight_prior * prior_val)
     
-    # Last 5 and Last 10
-    if not player_game_logs.empty:
-        last5 = calculate_last_n_average(player_game_logs, n=5)
-        last10 = calculate_last_n_average(player_game_logs, n=10)
-        features.update(last5)
-        features.update(last10)
+    # Last 5 and Last 10 - combine current and prior season for better early season accuracy
+    if not player_game_logs.empty and prior_season_logs is not None and not prior_season_logs.empty:
+        # Combine current season + prior season games
+        combined_logs = pd.concat([player_game_logs, prior_season_logs], ignore_index=True)
+        last5_stats = calculate_last_n_average(combined_logs, n=5)
+        last10_stats = calculate_last_n_average(combined_logs, n=10)
+        features.update(last5_stats)
+        features.update(last10_stats)
+    elif not player_game_logs.empty:
+        # Only current season available
+        last5_stats = calculate_last_n_average(player_game_logs, n=5)
+        last10_stats = calculate_last_n_average(player_game_logs, n=10)
+        features.update(last5_stats)
+        features.update(last10_stats)
+    elif prior_season_logs is not None and not prior_season_logs.empty:
+        # Only prior season available
+        last5_stats = calculate_last_n_average(prior_season_logs, n=5)
+        last10_stats = calculate_last_n_average(prior_season_logs, n=10)
+        features.update(last5_stats)
+        features.update(last10_stats)
     else:
-        if prior_season_logs is not None and not prior_season_logs.empty:
-            last5 = calculate_last_n_average(prior_season_logs, n=5)
-            last10 = calculate_last_n_average(prior_season_logs, n=10)
-            features.update(last5)
-            features.update(last10)
+        # Use season averages as fallback
+        for stat in ['PTS', 'AST', 'REB', 'FG3M', 'PRA']:
+            features[f'{stat}_last5'] = features.get(f'{stat}_avg', 0)
+            features[f'{stat}_last10'] = features.get(f'{stat}_avg', 0)
     
     # Prior season reference
     features['prior_PTS'] = prior_stats.get('PTS_avg', 0)
